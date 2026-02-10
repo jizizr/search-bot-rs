@@ -1,6 +1,6 @@
 services:
   elasticsearch:
-    image: elasticsearch:8.15.0
+    build: docker/elasticsearch
     container_name: search-bot-es
     environment:
       - discovery.type=single-node
@@ -8,20 +8,9 @@ services:
       - ES_JAVA_OPTS=-Xms512m -Xmx512m
     volumes:
       - ./data/es_data:/usr/share/elasticsearch/data
-      - ./data/es_plugins:/usr/share/elasticsearch/plugins
     ports:
       - "9200:9200"
     restart: unless-stopped
-    user: "0"
-    command: >
-      bash -c '
-        chown -R 1000:1000 /usr/share/elasticsearch/data /usr/share/elasticsearch/plugins
-        if [ ! -d /usr/share/elasticsearch/plugins/analysis-ik ]; then
-          echo "Installing IK Analysis plugin..."
-          su elasticsearch -c "elasticsearch-plugin install --batch https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-8.15.0.zip"
-        fi
-        exec su elasticsearch -c "/usr/local/bin/docker-entrypoint.sh elasticsearch"
-      '
     healthcheck:
       test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
       interval: 10s

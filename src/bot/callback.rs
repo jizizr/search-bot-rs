@@ -6,6 +6,7 @@ use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode};
 
 use crate::es::search::{SearchClient, SearchParams, SearchResult};
+use crate::models::user_cache::UserCache;
 
 /// In-memory store for active search sessions.
 /// Key: short session hash, Value: SearchParams.
@@ -36,6 +37,7 @@ pub async fn handle_search(
     query: String,
     search_client: Arc<SearchClient>,
     sessions: SearchSessions,
+    user_cache: UserCache,
     default_page_size: usize,
 ) -> anyhow::Result<()> {
     let chat_id = msg.chat.id;
@@ -47,12 +49,26 @@ pub async fn handle_search(
     }
 
     // Parse query: detect @username prefix
-    let (keyword, username) = parse_search_query(&query);
+    let (keyword, username_opt) = parse_search_query(&query);
+
+    // Resolve username to user_id via cache; if username given but unknown, return early
+    let user_id_filter = if let Some(ref username) = username_opt {
+        match user_cache.resolve_username(username) {
+            Some(uid) => Some(uid),
+            None => {
+                bot.send_message(chat_id, format!("未找到用户 @{username}"))
+                    .await?;
+                return Ok(());
+            }
+        }
+    } else {
+        None
+    };
 
     let params = SearchParams {
         chat_id: chat_id.0,
         keyword: Some(keyword.clone()),
-        username,
+        user_id: user_id_filter,
         page: 0,
         page_size: default_page_size,
         ..Default::default()
@@ -62,7 +78,7 @@ pub async fn handle_search(
     let sid = session_id(chat_id.0, &keyword);
     sessions.insert(sid.clone(), params);
 
-    let text = format_results(&result, chat_id.0);
+    let text = format_results(&result, chat_id.0, &user_cache);
     let keyboard = build_results_keyboard(&result, &sid);
 
     bot.send_message(chat_id, text)
@@ -79,6 +95,7 @@ pub async fn handle_callback(
     q: CallbackQuery,
     search_client: Arc<SearchClient>,
     sessions: SearchSessions,
+    user_cache: UserCache,
 ) -> anyhow::Result<()> {
     let data = match q.data {
         Some(ref d) => d.clone(),
@@ -107,7 +124,7 @@ pub async fn handle_callback(
                     drop(params);
 
                     let result = search_client.search(&params_clone).await?;
-                    let text = format_results(&result, params_clone.chat_id);
+                    let text = format_results(&result, params_clone.chat_id, &user_cache);
                     let keyboard = build_results_keyboard(&result, sid);
 
                     if let Some(id) = msg.regular_message().map(|m| m.id) {
@@ -137,7 +154,7 @@ pub async fn handle_callback(
                     drop(params);
 
                     let result = search_client.search(&params_clone).await?;
-                    let text = format_results(&result, params_clone.chat_id);
+                    let text = format_results(&result, params_clone.chat_id, &user_cache);
                     let keyboard = build_results_keyboard(&result, sid);
 
                     if let Some(id) = msg.regular_message().map(|m| m.id) {
@@ -182,7 +199,7 @@ pub async fn handle_callback(
                     drop(params);
 
                     let result = search_client.search(&params_clone).await?;
-                    let text = format_results(&result, params_clone.chat_id);
+                    let text = format_results(&result, params_clone.chat_id, &user_cache);
                     let keyboard = build_results_keyboard(&result, sid);
 
                     if let Some(id) = msg.regular_message().map(|m| m.id) {
@@ -217,7 +234,7 @@ fn parse_search_query(query: &str) -> (String, Option<String>) {
     }
 }
 
-fn format_results(result: &SearchResult, chat_id: i64) -> String {
+fn format_results(result: &SearchResult, chat_id: i64, user_cache: &UserCache) -> String {
     if result.total == 0 {
         return "未找到相关消息。".to_string();
     }
@@ -231,7 +248,12 @@ fn format_results(result: &SearchResult, chat_id: i64) -> String {
 
     for (i, hit) in result.messages.iter().enumerate() {
         let num = result.page * 5 + i + 1;
-        let name = html_escape(&hit.message.display_name);
+        let name = hit
+            .message
+            .user_id
+            .and_then(|uid| user_cache.get_display_name(uid))
+            .unwrap_or_else(|| "匿名".to_string());
+        let name = html_escape(&name);
         let date = chrono::DateTime::from_timestamp(hit.message.date, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default();

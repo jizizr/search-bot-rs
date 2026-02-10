@@ -13,11 +13,13 @@ use crate::bot::message_recorder::record_message;
 use crate::config::WebhookConfig;
 use crate::es::indexer::BatchIndexer;
 use crate::es::search::SearchClient;
+use crate::models::user_cache::UserCache;
 
 pub async fn run_bot(
     bot: Bot,
     indexer: Arc<BatchIndexer>,
     search_client: Arc<SearchClient>,
+    user_cache: UserCache,
     default_page_size: usize,
     webhook_config: WebhookConfig,
 ) -> anyhow::Result<()> {
@@ -29,8 +31,9 @@ pub async fn run_bot(
             |bot: Bot,
              q: CallbackQuery,
              search_client: Arc<SearchClient>,
-             sessions: SearchSessions| async move {
-                handle_callback(bot, q, search_client, sessions).await?;
+             sessions: SearchSessions,
+             user_cache: UserCache| async move {
+                handle_callback(bot, q, search_client, sessions, user_cache).await?;
                 Ok::<(), anyhow::Error>(())
             },
         ))
@@ -44,8 +47,21 @@ pub async fn run_bot(
                      cmd: Command,
                      search_client: Arc<SearchClient>,
                      sessions: SearchSessions,
+                     user_cache: UserCache,
                      _indexer: Arc<BatchIndexer>,
                      default_page_size: usize| async move {
+                        // Update user cache from command senders too
+                        if let Some(user) = msg.from.as_ref() {
+                            let display_name = match &user.last_name {
+                                Some(last) => format!("{} {last}", user.first_name),
+                                None => user.first_name.clone(),
+                            };
+                            user_cache.update(
+                                user.id.0 as i64,
+                                user.username.as_deref(),
+                                display_name,
+                            );
+                        }
                         match cmd {
                             Command::Search(query) => {
                                 handle_search(
@@ -54,6 +70,7 @@ pub async fn run_bot(
                                     query,
                                     search_client,
                                     sessions,
+                                    user_cache,
                                     default_page_size,
                                 )
                                 .await?;
@@ -69,8 +86,8 @@ pub async fn run_bot(
         )
         // Branch 3: Record all other messages (catch-all, must be last)
         .branch(Update::filter_message().endpoint(
-            |msg: Message, indexer: Arc<BatchIndexer>| async move {
-                record_message(msg, indexer).await?;
+            |msg: Message, indexer: Arc<BatchIndexer>, user_cache: UserCache| async move {
+                record_message(msg, indexer, user_cache).await?;
                 Ok::<(), anyhow::Error>(())
             },
         ));
@@ -80,6 +97,7 @@ pub async fn run_bot(
             indexer,
             search_client,
             sessions,
+            user_cache,
             default_page_size
         ])
         .default_handler(|_| async {})
@@ -91,8 +109,7 @@ pub async fn run_bot(
         // Production: webhook mode
         let addr: SocketAddr =
             format!("{}:{}", webhook_config.listen_addr, webhook_config.port).parse()?;
-        let base = webhook_config.url.trim_end_matches('/');
-        let webhook_url: url::Url = format!("{base}/webhook").parse()?;
+        let webhook_url: url::Url = webhook_config.url.parse()?;
 
         let listener = webhooks::axum(bot, webhooks::Options::new(addr, webhook_url))
             .await

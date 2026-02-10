@@ -3,11 +3,29 @@ use teloxide::prelude::*;
 
 use crate::es::indexer::BatchIndexer;
 use crate::models::message::{ChatMessage, MessageType};
+use crate::models::user_cache::UserCache;
 
-pub async fn record_message(msg: Message, indexer: Arc<BatchIndexer>) -> anyhow::Result<()> {
+pub async fn record_message(
+    msg: Message,
+    indexer: Arc<BatchIndexer>,
+    user_cache: UserCache,
+) -> anyhow::Result<()> {
     // Only record from groups and supergroups
     if !msg.chat.is_group() && !msg.chat.is_supergroup() {
         return Ok(());
+    }
+
+    // Always update user cache (even for media-only messages without text)
+    if let Some(user) = msg.from.as_ref() {
+        let display_name = match &user.last_name {
+            Some(last) => format!("{} {last}", user.first_name),
+            None => user.first_name.clone(),
+        };
+        user_cache.update(
+            user.id.0 as i64,
+            user.username.as_deref(),
+            display_name,
+        );
     }
 
     let text = extract_text(&msg);
@@ -15,26 +33,13 @@ pub async fn record_message(msg: Message, indexer: Arc<BatchIndexer>) -> anyhow:
         return Ok(());
     }
 
-    let user = msg.from.as_ref();
     let chat_message = ChatMessage {
         message_id: msg.id.0 as i64,
         chat_id: msg.chat.id.0,
-        user_id: user.map(|u| u.id.0 as i64),
-        username: user.and_then(|u| u.username.clone()),
-        display_name: user
-            .map(|u| {
-                let first = &u.first_name;
-                match &u.last_name {
-                    Some(last) => format!("{first} {last}"),
-                    None => first.clone(),
-                }
-            })
-            .unwrap_or_default(),
+        user_id: msg.from.as_ref().map(|u| u.id.0 as i64),
         text,
         date: msg.date.timestamp(),
-        reply_to_message_id: msg.reply_to_message().map(|r| r.id.0 as i64),
         message_type: classify_message(&msg),
-        chat_title: msg.chat.title().map(String::from),
     };
 
     indexer.index(chat_message).await;

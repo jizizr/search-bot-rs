@@ -13,7 +13,7 @@ pub struct SearchClient {
 pub struct SearchParams {
     pub chat_id: i64,
     pub keyword: Option<String>,
-    pub username: Option<String>,
+    pub user_id: Option<i64>,
     pub date_from: Option<i64>,
     pub date_to: Option<i64>,
     pub message_type: Option<String>,
@@ -26,7 +26,7 @@ impl Default for SearchParams {
         Self {
             chat_id: 0,
             keyword: None,
-            username: None,
+            user_id: None,
             date_from: None,
             date_to: None,
             message_type: None,
@@ -101,10 +101,9 @@ impl SearchClient {
             }
         }
 
-        // Filter by username (exact match on keyword field)
-        if let Some(ref username) = params.username {
-            let clean = username.trim_start_matches('@');
-            filter_clauses.push(json!({ "term": { "username": clean } }));
+        // Filter by user_id (resolved from username before search)
+        if let Some(uid) = params.user_id {
+            filter_clauses.push(json!({ "term": { "user_id": uid } }));
         }
 
         // Date range filter

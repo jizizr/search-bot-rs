@@ -4,15 +4,12 @@ use serde::{Deserialize, Serialize};
 pub struct ChatMessage {
     pub message_id: i64,
     pub chat_id: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
     pub user_id: Option<i64>,
-    pub username: Option<String>,
-    pub display_name: String,
     pub text: String,
     /// Unix epoch seconds
     pub date: i64,
-    pub reply_to_message_id: Option<i64>,
     pub message_type: MessageType,
-    pub chat_title: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
