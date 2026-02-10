@@ -3,29 +3,11 @@ use teloxide::prelude::*;
 
 use crate::es::indexer::BatchIndexer;
 use crate::models::message::{ChatMessage, MessageType};
-use crate::models::user_cache::UserCache;
 
-pub async fn record_message(
-    msg: Message,
-    indexer: Arc<BatchIndexer>,
-    user_cache: UserCache,
-) -> anyhow::Result<()> {
+pub async fn record_message(msg: Message, indexer: Arc<BatchIndexer>) -> anyhow::Result<()> {
     // Only record from groups and supergroups
     if !msg.chat.is_group() && !msg.chat.is_supergroup() {
         return Ok(());
-    }
-
-    // Always update user cache (even for media-only messages without text)
-    if let Some(user) = msg.from.as_ref() {
-        let display_name = match &user.last_name {
-            Some(last) => format!("{} {last}", user.first_name),
-            None => user.first_name.clone(),
-        };
-        user_cache.update(
-            user.id.0 as i64,
-            user.username.as_deref(),
-            display_name,
-        );
     }
 
     let text = extract_text(&msg);

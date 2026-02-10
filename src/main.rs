@@ -52,10 +52,7 @@ async fn main() -> anyhow::Result<()> {
         config.elasticsearch.index_name,
     ));
 
-    // Create user cache (in-memory username<->user_id mapping)
-    let user_cache = models::user_cache::UserCache::new();
-
-    // Create bot and launch webhook dispatcher
+    // Create bot and launch dispatcher
     let bot = Bot::new(&config.telegram.bot_token);
 
     tracing::info!("Bot starting...");
@@ -64,7 +61,6 @@ async fn main() -> anyhow::Result<()> {
         bot,
         indexer,
         search_client,
-        user_cache,
         config.search.default_page_size,
         config.webhook,
     )

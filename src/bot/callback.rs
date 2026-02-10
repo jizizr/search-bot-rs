@@ -6,7 +6,6 @@ use teloxide::prelude::*;
 use teloxide::types::{InlineKeyboardButton, InlineKeyboardMarkup, ParseMode};
 
 use crate::es::search::{SearchClient, SearchParams, SearchResult};
-use crate::models::user_cache::UserCache;
 
 /// In-memory store for active search sessions.
 /// Key: short session hash, Value: SearchParams.
@@ -21,7 +20,6 @@ fn session_id(chat_id: i64, keyword: &str) -> String {
     let mut hasher = DefaultHasher::new();
     chat_id.hash(&mut hasher);
     keyword.hash(&mut hasher);
-    // Use current time to allow multiple searches with same keyword
     std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .unwrap_or_default()
@@ -37,33 +35,30 @@ pub async fn handle_search(
     query: String,
     search_client: Arc<SearchClient>,
     sessions: SearchSessions,
-    user_cache: UserCache,
     default_page_size: usize,
 ) -> anyhow::Result<()> {
     let chat_id = msg.chat.id;
 
     if query.trim().is_empty() {
-        bot.send_message(chat_id, "用法: /search <关键词>\n\n示例:\n/search 你好\n/search @username 关键词")
-            .await?;
+        bot.send_message(
+            chat_id,
+            "用法: /search <关键词>\n\n\
+             示例:\n\
+             /search 你好\n\
+             /search id:123456 关键词\n\n\
+             也可以回复某人的消息后发送 /search 关键词，自动过滤该用户",
+        )
+        .await?;
         return Ok(());
     }
 
-    // Parse query: detect @username prefix
-    let (keyword, username_opt) = parse_search_query(&query);
+    // Extract user_id from replied-to message (if any)
+    let reply_user_id = msg
+        .reply_to_message()
+        .and_then(|r| r.from.as_ref())
+        .map(|u| u.id.0 as i64);
 
-    // Resolve username to user_id via cache; if username given but unknown, return early
-    let user_id_filter = if let Some(ref username) = username_opt {
-        match user_cache.resolve_username(username) {
-            Some(uid) => Some(uid),
-            None => {
-                bot.send_message(chat_id, format!("未找到用户 @{username}"))
-                    .await?;
-                return Ok(());
-            }
-        }
-    } else {
-        None
-    };
+    let (keyword, user_id_filter) = parse_search_query(&query, reply_user_id);
 
     let params = SearchParams {
         chat_id: chat_id.0,
@@ -78,7 +73,7 @@ pub async fn handle_search(
     let sid = session_id(chat_id.0, &keyword);
     sessions.insert(sid.clone(), params);
 
-    let text = format_results(&result, chat_id.0, &user_cache);
+    let text = format_results(&result, chat_id.0);
     let keyboard = build_results_keyboard(&result, &sid);
 
     bot.send_message(chat_id, text)
@@ -95,14 +90,12 @@ pub async fn handle_callback(
     q: CallbackQuery,
     search_client: Arc<SearchClient>,
     sessions: SearchSessions,
-    user_cache: UserCache,
 ) -> anyhow::Result<()> {
     let data = match q.data {
         Some(ref d) => d.clone(),
         None => return Ok(()),
     };
 
-    // Answer callback to dismiss loading indicator
     bot.answer_callback_query(&q.id).await?;
 
     let msg = match q.message {
@@ -113,7 +106,6 @@ pub async fn handle_callback(
     let parts: Vec<&str> = data.split(':').collect();
     match parts.first() {
         Some(&"p") => {
-            // Pagination: p:{page}:{session_id}
             if parts.len() >= 3 {
                 let page: usize = parts[1].parse().unwrap_or(0);
                 let sid = parts[2];
@@ -124,7 +116,7 @@ pub async fn handle_callback(
                     drop(params);
 
                     let result = search_client.search(&params_clone).await?;
-                    let text = format_results(&result, params_clone.chat_id, &user_cache);
+                    let text = format_results(&result, params_clone.chat_id);
                     let keyboard = build_results_keyboard(&result, sid);
 
                     if let Some(id) = msg.regular_message().map(|m| m.id) {
@@ -137,13 +129,11 @@ pub async fn handle_callback(
             }
         }
         Some(&"ft") => {
-            // Filter by message type: ft:{type}:{session_id}
             if parts.len() >= 3 {
                 let msg_type = parts[1];
                 let sid = parts[2];
 
                 if let Some(mut params) = sessions.get_mut(sid) {
-                    // Toggle: if same type is set, remove it; otherwise set it
                     if params.message_type.as_deref() == Some(msg_type) {
                         params.message_type = None;
                     } else {
@@ -154,7 +144,7 @@ pub async fn handle_callback(
                     drop(params);
 
                     let result = search_client.search(&params_clone).await?;
-                    let text = format_results(&result, params_clone.chat_id, &user_cache);
+                    let text = format_results(&result, params_clone.chat_id);
                     let keyboard = build_results_keyboard(&result, sid);
 
                     if let Some(id) = msg.regular_message().map(|m| m.id) {
@@ -167,8 +157,6 @@ pub async fn handle_callback(
             }
         }
         Some(&"fd") => {
-            // Filter by date range: fd:{range}:{session_id}
-            // range: "7d", "30d", "all"
             if parts.len() >= 3 {
                 let range = parts[1];
                 let sid = parts[2];
@@ -189,7 +177,6 @@ pub async fn handle_callback(
                             params.date_to = None;
                         }
                         _ => {
-                            // "all" - remove date filter
                             params.date_from = None;
                             params.date_to = None;
                         }
@@ -199,7 +186,7 @@ pub async fn handle_callback(
                     drop(params);
 
                     let result = search_client.search(&params_clone).await?;
-                    let text = format_results(&result, params_clone.chat_id, &user_cache);
+                    let text = format_results(&result, params_clone.chat_id);
                     let keyboard = build_results_keyboard(&result, sid);
 
                     if let Some(id) = msg.regular_message().map(|m| m.id) {
@@ -211,36 +198,41 @@ pub async fn handle_callback(
                 }
             }
         }
-        _ => {
-            // noop or unknown callback
-        }
+        _ => {}
     }
 
     Ok(())
 }
 
-fn parse_search_query(query: &str) -> (String, Option<String>) {
+/// Parse search query: extract `id:<user_id>` prefix, or fall back to reply-to user_id.
+fn parse_search_query(query: &str, reply_user_id: Option<i64>) -> (String, Option<i64>) {
     let parts: Vec<&str> = query.splitn(2, ' ').collect();
-    if parts.len() == 2 && parts[0].starts_with('@') {
-        let username = parts[0].trim_start_matches('@').to_string();
-        let keyword = parts[1].to_string();
-        (keyword, Some(username))
-    } else if parts.len() == 2 && parts[1].starts_with('@') {
-        let keyword = parts[0].to_string();
-        let username = parts[1].trim_start_matches('@').to_string();
-        (keyword, Some(username))
-    } else {
-        (query.to_string(), None)
+
+    // Check id:123456 as first token
+    if parts.len() == 2 {
+        if let Some(uid) = try_parse_id_prefix(parts[0]) {
+            return (parts[1].to_string(), Some(uid));
+        }
+        if let Some(uid) = try_parse_id_prefix(parts[1]) {
+            return (parts[0].to_string(), Some(uid));
+        }
     }
+
+    // Fall back to reply-to user
+    (query.to_string(), reply_user_id)
 }
 
-fn format_results(result: &SearchResult, chat_id: i64, user_cache: &UserCache) -> String {
+fn try_parse_id_prefix(token: &str) -> Option<i64> {
+    token.strip_prefix("id:").and_then(|s| s.parse().ok())
+}
+
+fn format_results(result: &SearchResult, chat_id: i64) -> String {
     if result.total == 0 {
         return "未找到相关消息。".to_string();
     }
 
     let mut text = format!(
-        "共找到 <b>{}</b> 条结果（第 {}/{}  页）：\n\n",
+        "共找到 <b>{}</b> 条结果（第 {}/{} 页）：\n\n",
         result.total,
         result.page + 1,
         result.total_pages
@@ -248,17 +240,10 @@ fn format_results(result: &SearchResult, chat_id: i64, user_cache: &UserCache) -
 
     for (i, hit) in result.messages.iter().enumerate() {
         let num = result.page * 5 + i + 1;
-        let name = hit
-            .message
-            .user_id
-            .and_then(|uid| user_cache.get_display_name(uid))
-            .unwrap_or_else(|| "匿名".to_string());
-        let name = html_escape(&name);
         let date = chrono::DateTime::from_timestamp(hit.message.date, 0)
             .map(|dt| dt.format("%Y-%m-%d %H:%M").to_string())
             .unwrap_or_default();
 
-        // Use highlight if available, otherwise truncate text
         let snippet = if let Some(ref hl) = hit.highlight {
             hl.clone()
         } else {
@@ -274,7 +259,7 @@ fn format_results(result: &SearchResult, chat_id: i64, user_cache: &UserCache) -
         let link = format_message_link(chat_id, hit.message.message_id);
 
         text.push_str(&format!(
-            "{num}. <b>{name}</b>  <i>{date}</i>\n{snippet}\n<a href=\"{link}\">跳转到消息</a>\n\n"
+            "{num}. <i>{date}</i>\n{snippet}\n<a href=\"{link}\">跳转到消息</a>\n\n"
         ));
     }
 
@@ -288,8 +273,6 @@ fn html_escape(s: &str) -> String {
 }
 
 fn format_message_link(chat_id: i64, message_id: i64) -> String {
-    // Telegram supergroup IDs: -100{channel_id}
-    // Link format: https://t.me/c/{channel_id}/{message_id}
     let abs_id = chat_id.unsigned_abs();
     let channel_id = if abs_id > 1_000_000_000_000 {
         abs_id - 1_000_000_000_000
@@ -302,7 +285,6 @@ fn format_message_link(chat_id: i64, message_id: i64) -> String {
 fn build_results_keyboard(result: &SearchResult, session_id: &str) -> InlineKeyboardMarkup {
     let mut rows: Vec<Vec<InlineKeyboardButton>> = vec![];
 
-    // Row 1: Pagination
     let mut nav_row = vec![];
     if result.page > 0 {
         nav_row.push(InlineKeyboardButton::callback(
@@ -324,7 +306,6 @@ fn build_results_keyboard(result: &SearchResult, session_id: &str) -> InlineKeyb
         rows.push(nav_row);
     }
 
-    // Row 2: Date range filters
     rows.push(vec![
         InlineKeyboardButton::callback("7天内", format!("fd:7d:{session_id}")),
         InlineKeyboardButton::callback("30天内", format!("fd:30d:{session_id}")),
@@ -332,7 +313,6 @@ fn build_results_keyboard(result: &SearchResult, session_id: &str) -> InlineKeyb
         InlineKeyboardButton::callback("全部", format!("fd:all:{session_id}")),
     ]);
 
-    // Row 3: Message type filters
     rows.push(vec![
         InlineKeyboardButton::callback("文字", format!("ft:text:{session_id}")),
         InlineKeyboardButton::callback("图片", format!("ft:photo:{session_id}")),
