@@ -42,11 +42,11 @@ pub async fn handle_search(
     if query.trim().is_empty() {
         bot.send_message(
             chat_id,
-            "用法: /search <关键词>\n\n\
+            "用法: /s <关键词>\n\n\
              示例:\n\
-             /search 你好\n\
-             /search id:123456 关键词\n\n\
-             也可以回复某人的消息后发送 /search 关键词，自动过滤该用户",
+             /s 你好\n\
+             /s id:123456 关键词\n\n\
+             也可以回复某人的消息后发送 /s 关键词，自动过滤该用户",
         )
         .await?;
         return Ok(());
