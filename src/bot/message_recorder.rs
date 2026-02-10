@@ -11,7 +11,7 @@ pub async fn record_message(msg: Message, indexer: Arc<BatchIndexer>) -> anyhow:
     }
 
     let text = extract_text(&msg);
-    if text.is_empty() {
+    if text.is_empty() || text.starts_with("/")  {
         return Ok(());
     }
 
