@@ -91,7 +91,8 @@ pub async fn run_bot(
         // Production: webhook mode
         let addr: SocketAddr =
             format!("{}:{}", webhook_config.listen_addr, webhook_config.port).parse()?;
-        let webhook_url: url::Url = format!("{}/webhook", webhook_config.url).parse()?;
+        let base = webhook_config.url.trim_end_matches('/');
+        let webhook_url: url::Url = format!("{base}/webhook").parse()?;
 
         let listener = webhooks::axum(bot, webhooks::Options::new(addr, webhook_url))
             .await
