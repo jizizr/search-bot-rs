@@ -88,8 +88,8 @@ impl SearchClient {
         filter_clauses.push(json!({ "term": { "chat_id": params.chat_id } }));
 
         // Full-text keyword search with IK smart analyzer
-        if let Some(ref keyword) = params.keyword {
-            if !keyword.is_empty() {
+        if let Some(ref keyword) = params.keyword
+            && !keyword.is_empty() {
                 must_clauses.push(json!({
                     "match": {
                         "text": {
@@ -99,7 +99,6 @@ impl SearchClient {
                     }
                 }));
             }
-        }
 
         // Filter by user_id (resolved from username before search)
         if let Some(uid) = params.user_id {
@@ -165,7 +164,7 @@ impl SearchClient {
         let total_pages = if total == 0 {
             0
         } else {
-            ((total as usize) + page_size - 1) / page_size
+            (total as usize).div_ceil(page_size)
         };
 
         let hits = body["hits"]["hits"]
