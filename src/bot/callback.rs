@@ -96,7 +96,7 @@ pub async fn handle_callback(
         None => return Ok(()),
     };
 
-    bot.answer_callback_query(&q.id).await?;
+    bot.answer_callback_query(q.id.clone()).await?;
 
     let msg = match q.message {
         Some(ref m) => m.clone(),

@@ -5,7 +5,7 @@ edition = "2024"
 
 [dependencies]
 # Telegram bot framework (with webhook support)
-teloxide = { version = "0.13", features = ["macros", "webhooks-axum"] }
+teloxide = { version = "0.17.0", features = ["macros", "webhooks-axum"] }
 
 # Elasticsearch official client
 elasticsearch = "8.5.0-alpha.1"
