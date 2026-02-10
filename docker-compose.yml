@@ -1,0 +1,40 @@
+services:
+  elasticsearch:
+    image: elasticsearch:8.15.0
+    container_name: search-bot-es
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    volumes:
+      - ./data/es_data:/usr/share/elasticsearch/data
+      - ./data/es_plugins:/usr/share/elasticsearch/plugins
+    ports:
+      - "9200:9200"
+    restart: unless-stopped
+    command: >
+      bash -c '
+        if [ ! -d /usr/share/elasticsearch/plugins/analysis-ik ]; then
+          echo "Installing IK Analysis plugin..."
+          elasticsearch-plugin install --batch https://release.infinilabs.com/analysis-ik/stable/elasticsearch-analysis-ik-8.15.0.zip
+        fi
+        exec /usr/local/bin/docker-entrypoint.sh elasticsearch
+      '
+    healthcheck:
+      test: ["CMD-SHELL", "curl -sf http://localhost:9200/_cluster/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 10
+
+  bot:
+    build: .
+    container_name: search-bot
+    env_file: .env
+    environment:
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+    ports:
+      - "${WEBHOOK_PORT:-8443}:${WEBHOOK_PORT:-8443}"
+    depends_on:
+      elasticsearch:
+        condition: service_healthy
+    restart: unless-stopped
