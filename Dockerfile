@@ -1,4 +1,4 @@
-FROM rust:1.85 AS builder
+FROM rust:1.92 AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 # Cache dependencies by building a dummy project first
