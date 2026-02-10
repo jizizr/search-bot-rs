@@ -2,6 +2,7 @@ services:
   elasticsearch:
     build: docker/elasticsearch
     container_name: search-bot-es
+    user: "0"
     environment:
       - discovery.type=single-node
       - xpack.security.enabled=false
