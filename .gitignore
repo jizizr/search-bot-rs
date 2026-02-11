@@ -1,4 +1,6 @@
 /target
 .env
 config.toml
+migrate.toml
+*.local
 data/

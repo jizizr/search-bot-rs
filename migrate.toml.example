@@ -1,0 +1,21 @@
+# MongoDB to Elasticsearch Migration Configuration
+
+[mongodb]
+# MongoDB connection URI
+uri = "mongodb://localhost:27017"
+# Database name
+database = "telegram_bot"
+# Collection name containing messages
+collection = "messages"
+
+[elasticsearch]
+# Elasticsearch URL
+url = "http://localhost:9200"
+# Index name
+index_name = "telegram_messages"
+
+[migration]
+# Number of documents to process in each batch
+batch_size = 500
+# Dry run mode - if true, will only simulate migration without writing to ES
+dry_run = false
