@@ -5,13 +5,17 @@ use crate::es::indexer::BatchIndexer;
 use crate::models::message::{ChatMessage, MessageType};
 
 pub async fn record_message(msg: Message, indexer: Arc<BatchIndexer>) -> anyhow::Result<()> {
-    // Only record from groups and supergroups
     if !msg.chat.is_group() && !msg.chat.is_supergroup() {
         return Ok(());
     }
 
-    let text = extract_text(&msg);
-    if text.is_empty() || text.starts_with("/")  {
+    let text = msg
+        .text()
+        .or_else(|| msg.caption())
+        .unwrap_or_default()
+        .to_string();
+
+    if text.is_empty() || text.starts_with('/') {
         return Ok(());
     }
 
@@ -26,13 +30,6 @@ pub async fn record_message(msg: Message, indexer: Arc<BatchIndexer>) -> anyhow:
 
     indexer.index(chat_message).await;
     Ok(())
-}
-
-fn extract_text(msg: &Message) -> String {
-    msg.text()
-        .or_else(|| msg.caption())
-        .unwrap_or_default()
-        .to_string()
 }
 
 fn classify_message(msg: &Message) -> MessageType {

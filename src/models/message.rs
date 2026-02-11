@@ -28,14 +28,14 @@ pub enum MessageType {
 impl std::fmt::Display for MessageType {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            MessageType::Text => write!(f, "text"),
-            MessageType::Photo => write!(f, "photo"),
-            MessageType::Video => write!(f, "video"),
-            MessageType::Document => write!(f, "document"),
-            MessageType::Sticker => write!(f, "sticker"),
-            MessageType::Voice => write!(f, "voice"),
-            MessageType::Animation => write!(f, "animation"),
-            MessageType::Other => write!(f, "other"),
+            Self::Text => write!(f, "text"),
+            Self::Photo => write!(f, "photo"),
+            Self::Video => write!(f, "video"),
+            Self::Document => write!(f, "document"),
+            Self::Sticker => write!(f, "sticker"),
+            Self::Voice => write!(f, "voice"),
+            Self::Animation => write!(f, "animation"),
+            Self::Other => write!(f, "other"),
         }
     }
 }

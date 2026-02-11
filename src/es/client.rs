@@ -39,9 +39,7 @@ async fn ensure_index(client: &Elasticsearch, index_name: &str) -> anyhow::Resul
             anyhow::bail!("Failed to create index: {error_body}");
         }
 
-        tracing::info!("Created index '{index_name}' with IK Chinese analyzer mapping");
-    } else {
-        tracing::info!("Index '{index_name}' already exists");
+        tracing::info!("Created index '{index_name}' with IK analyzer mapping");
     }
 
     Ok(())

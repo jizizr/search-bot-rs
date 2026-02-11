@@ -2,6 +2,7 @@
 name = "search-bot-rs"
 version = "0.1.0"
 edition = "2024"
+default-run = "search-bot-rs"
 
 [[bin]]
 name = "search-bot-rs"

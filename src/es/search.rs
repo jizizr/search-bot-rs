@@ -9,7 +9,7 @@ pub struct SearchClient {
     index_name: String,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Default)]
 pub struct SearchParams {
     pub chat_id: i64,
     pub keyword: Option<String>,
@@ -21,21 +21,6 @@ pub struct SearchParams {
     pub page_size: usize,
 }
 
-impl Default for SearchParams {
-    fn default() -> Self {
-        Self {
-            chat_id: 0,
-            keyword: None,
-            user_id: None,
-            date_from: None,
-            date_to: None,
-            message_type: None,
-            page: 0,
-            page_size: 5,
-        }
-    }
-}
-
 #[derive(Debug)]
 pub struct SearchResult {
     pub total: u64,
@@ -45,11 +30,9 @@ pub struct SearchResult {
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 pub struct SearchHit {
     pub message: ChatMessage,
     pub highlight: Option<String>,
-    pub score: f64,
 }
 
 impl SearchClient {
@@ -81,58 +64,43 @@ impl SearchClient {
     }
 
     fn build_query(&self, params: &SearchParams) -> Value {
-        let mut must_clauses: Vec<Value> = vec![];
-        let mut filter_clauses: Vec<Value> = vec![];
+        let mut must = vec![];
+        let mut filter = vec![json!({ "term": { "chat_id": params.chat_id } })];
 
-        // Always filter by chat_id (security: only search within the requesting group)
-        filter_clauses.push(json!({ "term": { "chat_id": params.chat_id } }));
-
-        // Full-text keyword search with IK smart analyzer
-        if let Some(ref keyword) = params.keyword
-            && !keyword.is_empty() {
-                must_clauses.push(json!({
-                    "match": {
-                        "text": {
-                            "query": keyword,
-                            "analyzer": "ik_smart"
-                        }
-                    }
-                }));
-            }
-
-        // Filter by user_id (resolved from username before search)
-        if let Some(uid) = params.user_id {
-            filter_clauses.push(json!({ "term": { "user_id": uid } }));
+        if let Some(ref kw) = params.keyword
+            && !kw.is_empty()
+        {
+            must.push(json!({
+                "match": { "text": { "query": kw, "analyzer": "ik_smart" } }
+            }));
         }
 
-        // Date range filter
-        let mut range_obj = serde_json::Map::new();
+        if must.is_empty() {
+            must.push(json!({ "match_all": {} }));
+        }
+
+        if let Some(uid) = params.user_id {
+            filter.push(json!({ "term": { "user_id": uid } }));
+        }
+
+        let mut range = serde_json::Map::new();
         if let Some(from) = params.date_from {
-            range_obj.insert("gte".to_string(), json!(from));
+            range.insert("gte".into(), json!(from));
         }
         if let Some(to) = params.date_to {
-            range_obj.insert("lte".to_string(), json!(to));
+            range.insert("lte".into(), json!(to));
         }
-        if !range_obj.is_empty() {
-            filter_clauses.push(json!({ "range": { "date": range_obj } }));
-        }
-
-        // Message type filter
-        if let Some(ref msg_type) = params.message_type {
-            filter_clauses.push(json!({ "term": { "message_type": msg_type } }));
+        if !range.is_empty() {
+            filter.push(json!({ "range": { "date": range } }));
         }
 
-        // If no keyword, use match_all in must
-        if must_clauses.is_empty() {
-            must_clauses.push(json!({ "match_all": {} }));
+        if let Some(ref mt) = params.message_type {
+            filter.push(json!({ "term": { "message_type": mt } }));
         }
 
         json!({
             "query": {
-                "bool": {
-                    "must": must_clauses,
-                    "filter": filter_clauses
-                }
+                "bool": { "must": must, "filter": filter }
             },
             "sort": [
                 { "_score": { "order": "desc" } },
@@ -157,46 +125,32 @@ impl SearchClient {
         page: usize,
         page_size: usize,
     ) -> anyhow::Result<SearchResult> {
-        let total = body["hits"]["total"]["value"]
-            .as_u64()
-            .unwrap_or(0);
-
+        let total = body["hits"]["total"]["value"].as_u64().unwrap_or(0);
         let total_pages = if total == 0 {
             0
         } else {
             (total as usize).div_ceil(page_size)
         };
 
-        let hits = body["hits"]["hits"]
+        let messages = body["hits"]["hits"]
             .as_array()
             .cloned()
-            .unwrap_or_default();
-
-        let mut messages = Vec::with_capacity(hits.len());
-        for hit in &hits {
-            let source = &hit["_source"];
-            let message: ChatMessage = match serde_json::from_value(source.clone()) {
-                Ok(m) => m,
-                Err(e) => {
-                    tracing::warn!("Failed to parse search hit: {e}");
-                    continue;
-                }
-            };
-
-            let highlight = hit["highlight"]["text"]
-                .as_array()
-                .and_then(|arr| arr.first())
-                .and_then(|v| v.as_str())
-                .map(String::from);
-
-            let score = hit["_score"].as_f64().unwrap_or(0.0);
-
-            messages.push(SearchHit {
-                message,
-                highlight,
-                score,
-            });
-        }
+            .unwrap_or_default()
+            .iter()
+            .filter_map(|hit| {
+                let message: ChatMessage =
+                    serde_json::from_value(hit["_source"].clone()).ok()?;
+                let highlight = hit["highlight"]["text"]
+                    .as_array()
+                    .and_then(|arr| arr.first())
+                    .and_then(|v| v.as_str())
+                    .map(String::from);
+                Some(SearchHit {
+                    message,
+                    highlight,
+                })
+            })
+            .collect();
 
         Ok(SearchResult {
             total,

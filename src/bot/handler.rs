@@ -5,9 +5,7 @@ use teloxide::prelude::*;
 use teloxide::update_listeners::webhooks;
 use teloxide::utils::command::BotCommands;
 
-use crate::bot::callback::{
-    create_sessions, handle_callback, handle_search, SearchSessions,
-};
+use crate::bot::callback::{handle_callback, handle_search};
 use crate::bot::commands::Command;
 use crate::bot::message_recorder::record_message;
 use crate::config::WebhookConfig;
@@ -21,20 +19,15 @@ pub async fn run_bot(
     default_page_size: usize,
     webhook_config: WebhookConfig,
 ) -> anyhow::Result<()> {
-    let sessions = create_sessions();
-
     let handler = dptree::entry()
-        // Branch 1: Handle callback queries (inline keyboard presses)
         .branch(Update::filter_callback_query().endpoint(
             |bot: Bot,
              q: CallbackQuery,
              search_client: Arc<SearchClient>,
-             sessions: SearchSessions| async move {
-                handle_callback(bot, q, search_client, sessions).await?;
-                Ok::<(), anyhow::Error>(())
+             default_page_size: usize| async move {
+                handle_callback(bot, q, search_client, default_page_size).await
             },
         ))
-        // Branch 2: Handle commands
         .branch(
             Update::filter_message()
                 .filter_command::<Command>()
@@ -43,20 +36,12 @@ pub async fn run_bot(
                      msg: Message,
                      cmd: Command,
                      search_client: Arc<SearchClient>,
-                     sessions: SearchSessions,
                      _indexer: Arc<BatchIndexer>,
                      default_page_size: usize| async move {
                         match cmd {
                             Command::Search(query) => {
-                                handle_search(
-                                    bot,
-                                    msg,
-                                    query,
-                                    search_client,
-                                    sessions,
-                                    default_page_size,
-                                )
-                                .await?;
+                                handle_search(bot, msg, query, search_client, default_page_size)
+                                    .await?;
                             }
                             Command::Help => {
                                 bot.send_message(msg.chat.id, Command::descriptions().to_string())
@@ -67,21 +52,14 @@ pub async fn run_bot(
                     },
                 ),
         )
-        // Branch 3: Record all other messages (catch-all, must be last)
         .branch(Update::filter_message().endpoint(
             |msg: Message, indexer: Arc<BatchIndexer>| async move {
-                record_message(msg, indexer).await?;
-                Ok::<(), anyhow::Error>(())
+                record_message(msg, indexer).await
             },
         ));
 
     let mut dispatcher = Dispatcher::builder(bot.clone(), handler)
-        .dependencies(dptree::deps![
-            indexer,
-            search_client,
-            sessions,
-            default_page_size
-        ])
+        .dependencies(dptree::deps![indexer, search_client, default_page_size])
         .default_handler(|_| async {})
         .error_handler(LoggingErrorHandler::new())
         .enable_ctrlc_handler()
@@ -91,13 +69,10 @@ pub async fn run_bot(
         let addr: SocketAddr =
             format!("{}:{}", webhook_config.listen_addr, webhook_config.port).parse()?;
         let webhook_url: url::Url = webhook_config.url.parse()?;
-
         let listener = webhooks::axum(bot, webhooks::Options::new(addr, webhook_url))
             .await
             .map_err(|e| anyhow::anyhow!("Failed to create webhook listener: {e}"))?;
-
         tracing::info!("Webhook listener bound to {addr}");
-
         dispatcher
             .dispatch_with_listener(
                 listener,
@@ -105,7 +80,6 @@ pub async fn run_bot(
             )
             .await;
     } else {
-        tracing::info!("Running in long-polling mode (no WEBHOOK_URL set)");
         dispatcher.dispatch().await;
     }
 

@@ -19,15 +19,7 @@ impl BatchIndexer {
         flush_interval_ms: u64,
     ) -> Self {
         let (tx, rx) = mpsc::channel::<ChatMessage>(batch_size * 4);
-
-        tokio::spawn(flush_loop(
-            rx,
-            es_client,
-            index_name,
-            batch_size,
-            flush_interval_ms,
-        ));
-
+        tokio::spawn(flush_loop(rx, es_client, index_name, batch_size, flush_interval_ms));
         Self { sender: tx }
     }
 
@@ -47,9 +39,7 @@ async fn flush_loop(
 ) {
     let mut buffer: Vec<ChatMessage> = Vec::with_capacity(batch_size);
     let mut tick = interval(Duration::from_millis(flush_interval_ms));
-
-    // Consume the first immediate tick
-    tick.tick().await;
+    tick.tick().await; // consume first immediate tick
 
     loop {
         tokio::select! {
@@ -62,11 +52,9 @@ async fn flush_loop(
                         }
                     }
                     None => {
-                        // Channel closed, flush remaining and exit
                         if !buffer.is_empty() {
                             flush_buffer(&es, &index_name, &mut buffer).await;
                         }
-                        tracing::info!("Indexer channel closed, flushed remaining buffer");
                         return;
                     }
                 }
@@ -82,16 +70,11 @@ async fn flush_loop(
 
 async fn flush_buffer(es: &Elasticsearch, index_name: &str, buffer: &mut Vec<ChatMessage>) {
     let count = buffer.len();
-    tracing::debug!("Flushing {count} messages to ES");
-
     let mut body: Vec<JsonBody<serde_json::Value>> = Vec::with_capacity(count * 2);
 
     for msg in buffer.drain(..) {
         let doc_id = format!("{}_{}", msg.chat_id, msg.message_id);
-
-        // Action line
         body.push(json!({"index": {"_id": doc_id}}).into());
-        // Document line
         match serde_json::to_value(&msg) {
             Ok(val) => body.push(val.into()),
             Err(e) => {
@@ -105,45 +88,23 @@ async fn flush_buffer(es: &Elasticsearch, index_name: &str, buffer: &mut Vec<Cha
         return;
     }
 
-    match es
-        .bulk(BulkParts::Index(index_name))
-        .body(body)
-        .send()
-        .await
-    {
-        Ok(response) => {
-            let status = response.status_code();
-            if !status.is_success() {
-                tracing::error!("Bulk index returned status {status}");
-            } else {
-                let body: serde_json::Value = match response.json().await {
-                    Ok(b) => b,
-                    Err(e) => {
-                        tracing::error!("Failed to read bulk response: {e}");
-                        return;
-                    }
-                };
-                if body["errors"].as_bool().unwrap_or(false) {
-                    let error_items: Vec<&serde_json::Value> = body["items"]
+    match es.bulk(BulkParts::Index(index_name)).body(body).send().await {
+        Ok(response) if response.status_code().is_success() => {
+            match response.json::<serde_json::Value>().await {
+                Ok(body) if body["errors"].as_bool().unwrap_or(false) => {
+                    let errs = body["items"]
                         .as_array()
                         .map(|items| {
-                            items
-                                .iter()
-                                .filter(|item| item["index"]["error"].is_object())
-                                .collect()
+                            items.iter().filter(|i| i["index"]["error"].is_object()).count()
                         })
-                        .unwrap_or_default();
-                    tracing::error!(
-                        "Bulk index had {} errors out of {count}",
-                        error_items.len()
-                    );
-                } else {
-                    tracing::debug!("Successfully indexed {count} messages");
+                        .unwrap_or(0);
+                    tracing::error!("Bulk index had {errs} errors out of {count}");
                 }
+                Ok(_) => tracing::debug!("Indexed {count} messages"),
+                Err(e) => tracing::error!("Failed to read bulk response: {e}"),
             }
         }
-        Err(e) => {
-            tracing::error!("Bulk index request failed: {e}");
-        }
+        Ok(response) => tracing::error!("Bulk index returned status {}", response.status_code()),
+        Err(e) => tracing::error!("Bulk index request failed: {e}"),
     }
 }
