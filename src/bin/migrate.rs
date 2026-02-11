@@ -96,14 +96,15 @@ impl From<MongoMessage> for EsMessage {
 }
 
 fn normalize_message_type(msg_type: &str) -> String {
-    match msg_type.to_lowercase().as_str() {
-        "text" | "0" => "text".to_string(),
-        "photo" | "1" => "photo".to_string(),
-        "video" | "2" => "video".to_string(),
-        "document" | "3" => "document".to_string(),
-        "sticker" | "4" => "sticker".to_string(),
-        "voice" | "5" => "voice".to_string(),
-        "animation" | "6" => "animation".to_string(),
+    match msg_type {
+        "0" | "text" => "text".to_string(),
+        "1" | "photo" => "photo".to_string(),
+        "2" | "video" => "video".to_string(),
+        "3" | "document" => "document".to_string(),
+        "4" | "sticker" => "sticker".to_string(),
+        "5" | "voice" => "voice".to_string(),
+        "6" | "animation" => "animation".to_string(),
+        "7" | "audio" => "audio".to_string(),
         _ => "other".to_string(),
     }
 }
@@ -165,6 +166,7 @@ async fn main() -> Result<()> {
         
         // Query messages for this specific group with message_id less than the earliest in ES
         // Note: message_id is inside msg_ctx in MongoDB BotLog structure
+        // Only migrate msg_type = 1 (photo messages)
         let filter = doc! {
             "$and": [
                 {
@@ -172,6 +174,9 @@ async fn main() -> Result<()> {
                 },
                 {
                     "msg_ctx.message_id": { "$lt": group.earliest_message_id }
+                },
+                {
+                    "msg_type": 1
                 }
             ]
         };
@@ -427,28 +432,31 @@ fn parse_mongo_document(doc: Document) -> Result<MongoMessage> {
         .or_else(|_| doc.get_i32("user_id").map(|v| v as i64))
         .ok();
 
-    let text = doc.get_str("text")
-        .or_else(|_| doc.get_str("content"))
-        .unwrap_or("")
-        .to_string();
+    // text is in msg_ctx.command in BotLog structure
+    let text = doc.get_document("msg_ctx")
+        .and_then(|ctx| ctx.get_str("command").map(|s| s.to_string()))
+        .or_else(|_| doc.get_str("text").map(|s| s.to_string()))
+        .or_else(|_| doc.get_str("content").map(|s| s.to_string()))
+        .unwrap_or_default();
 
-    let date = doc.get_i64("date")
+    // timestamp is ISODate in BotLog
+    let date = doc.get_datetime("timestamp")
+        .or_else(|_| doc.get_datetime("date"))
+        .map(|dt| dt.timestamp_millis() / 1000) // Convert to seconds
+        .or_else(|_| doc.get_i64("date"))
         .or_else(|_| doc.get_i64("timestamp"))
         .or_else(|_| doc.get_i32("date").map(|v| v as i64))
         .or_else(|_| doc.get_i32("timestamp").map(|v| v as i64))
-        .or_else(|_| {
-            // Try to get from DateTime
-            doc.get_datetime("date")
-                .or_else(|_| doc.get_datetime("timestamp"))
-                .map(|dt| dt.timestamp_millis())
-        })
         .context("Missing date/timestamp")?;
 
-    let message_type = doc.get_str("message_type")
-        .or_else(|_| doc.get_str("msg_type"))
-        .or_else(|_| doc.get_str("type"))
-        .unwrap_or("text")
-        .to_string();
+    // msg_type is a number in BotLog: 0=text, 1=photo, 2=video, etc.
+    let message_type = doc.get_i32("msg_type")
+        .or_else(|_| doc.get_i64("msg_type").map(|v| v as i32))
+        .map(|v| v.to_string())
+        .or_else(|_| doc.get_str("message_type").map(|s| s.to_string()))
+        .or_else(|_| doc.get_str("msg_type").map(|s| s.to_string()))
+        .or_else(|_| doc.get_str("type").map(|s| s.to_string()))
+        .unwrap_or_else(|_| "0".to_string());
 
     Ok(MongoMessage {
         message_id,
