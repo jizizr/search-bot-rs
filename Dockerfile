@@ -2,7 +2,7 @@ FROM rust:1.92 AS builder
 WORKDIR /build
 COPY Cargo.toml Cargo.lock ./
 # Cache dependencies by building a dummy project first
-RUN mkdir src && echo "fn main() {}" > src/main.rs && cargo build --release && rm -rf src
+RUN mkdir -p src/bin && echo "fn main() {}" > src/main.rs && echo "fn main() {}" > src/bin/migrate.rs && cargo build --release && rm -rf src
 COPY src/ src/
 RUN touch src/main.rs && cargo build --release
 
