@@ -375,20 +375,33 @@ async fn get_groups_with_earliest_messages(
 
     let body: serde_json::Value = response.json().await?;
     
+    // Debug: log the response to understand what ES returns
+    tracing::debug!("ES aggregation response: {}", serde_json::to_string_pretty(&body).unwrap_or_default());
+    
     let mut groups = Vec::new();
     
     if let Some(buckets) = body["aggregations"]["groups"]["buckets"].as_array() {
         for bucket in buckets {
-            if let (Some(chat_id), Some(earliest_message_id)) = (
-                bucket["key"].as_i64(),
-                bucket["earliest_message"]["value"].as_i64(),
-            ) {
+            let chat_id = bucket["key"].as_i64();
+            
+            // ES may return the value as float or int, so we need to handle both
+            let earliest_message_id = bucket["earliest_message"]["value"].as_f64()
+                .map(|f| f as i64)
+                .or_else(|| bucket["earliest_message"]["value"].as_i64());
+            
+            if let (Some(chat_id), Some(earliest_message_id)) = (chat_id, earliest_message_id) {
                 groups.push(GroupEarliestMessage {
                     chat_id,
                     earliest_message_id,
                 });
+            } else {
+                warn!("Failed to parse bucket: chat_id={:?}, earliest_message_id={:?}, bucket={}", 
+                    chat_id, earliest_message_id, bucket);
             }
         }
+    } else {
+        warn!("No aggregations found in ES response. Response body: {}", 
+            serde_json::to_string_pretty(&body).unwrap_or_default());
     }
 
     Ok(groups)
