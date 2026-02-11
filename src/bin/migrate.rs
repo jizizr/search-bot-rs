@@ -90,22 +90,9 @@ impl From<MongoMessage> for EsMessage {
             user_id: mongo_msg.user_id,
             text: mongo_msg.text,
             date,
-            message_type: normalize_message_type(&mongo_msg.message_type),
+            // Always use "text" as message_type regardless of MongoDB msg_type
+            message_type: "text".to_string(),
         }
-    }
-}
-
-fn normalize_message_type(msg_type: &str) -> String {
-    match msg_type {
-        "0" | "text" => "text".to_string(),
-        "1" | "photo" => "photo".to_string(),
-        "2" | "video" => "video".to_string(),
-        "3" | "document" => "document".to_string(),
-        "4" | "sticker" => "sticker".to_string(),
-        "5" | "voice" => "voice".to_string(),
-        "6" | "animation" => "animation".to_string(),
-        "7" | "audio" => "audio".to_string(),
-        _ => "other".to_string(),
     }
 }
 
@@ -281,42 +268,54 @@ async fn main() -> Result<()> {
 
 fn load_config() -> Result<MigrationConfig> {
     // Try loading from migrate.toml
-    if std::path::Path::new("migrate.toml").exists() {
+    let mut config = if std::path::Path::new("migrate.toml").exists() {
         let content = std::fs::read_to_string("migrate.toml")?;
-        let config: MigrationConfig = toml::from_str(&content)
-            .context("Failed to parse migrate.toml")?;
-        return Ok(config);
+        toml::from_str(&content)
+            .context("Failed to parse migrate.toml")?
+    } else {
+        // Fallback to environment variables
+        let _ = dotenvy::dotenv();
+        
+        MigrationConfig {
+            mongodb: MongoDbConfig {
+                uri: std::env::var("MONGODB_URI")
+                    .context("MONGODB_URI not set")?,
+                database: std::env::var("MONGODB_DATABASE")
+                    .context("MONGODB_DATABASE not set")?,
+                collection: std::env::var("MONGODB_COLLECTION")
+                    .unwrap_or_else(|_| "messages".to_string()),
+            },
+            elasticsearch: EsConfig {
+                url: std::env::var("ELASTICSEARCH_URL")
+                    .context("ELASTICSEARCH_URL not set")?,
+                index_name: std::env::var("ELASTICSEARCH_INDEX")
+                    .context("ELASTICSEARCH_INDEX not set")?,
+            },
+            migration: MigrationSettings {
+                batch_size: std::env::var("MIGRATION_BATCH_SIZE")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(500),
+                dry_run: std::env::var("MIGRATION_DRY_RUN")
+                    .ok()
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(false),
+            },
+        }
+    };
+
+    // Environment variables override config file settings
+    if let Ok(dry_run_str) = std::env::var("MIGRATION_DRY_RUN") {
+        if let Ok(dry_run) = dry_run_str.parse::<bool>() {
+            config.migration.dry_run = dry_run;
+        }
     }
 
-    // Fallback to environment variables
-    let _ = dotenvy::dotenv();
-    
-    let config = MigrationConfig {
-        mongodb: MongoDbConfig {
-            uri: std::env::var("MONGODB_URI")
-                .context("MONGODB_URI not set")?,
-            database: std::env::var("MONGODB_DATABASE")
-                .context("MONGODB_DATABASE not set")?,
-            collection: std::env::var("MONGODB_COLLECTION")
-                .unwrap_or_else(|_| "messages".to_string()),
-        },
-        elasticsearch: EsConfig {
-            url: std::env::var("ELASTICSEARCH_URL")
-                .context("ELASTICSEARCH_URL not set")?,
-            index_name: std::env::var("ELASTICSEARCH_INDEX")
-                .context("ELASTICSEARCH_INDEX not set")?,
-        },
-        migration: MigrationSettings {
-            batch_size: std::env::var("MIGRATION_BATCH_SIZE")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(500),
-            dry_run: std::env::var("MIGRATION_DRY_RUN")
-                .ok()
-                .and_then(|s| s.parse().ok())
-                .unwrap_or(false),
-        },
-    };
+    if let Ok(batch_size_str) = std::env::var("MIGRATION_BATCH_SIZE") {
+        if let Ok(batch_size) = batch_size_str.parse::<usize>() {
+            config.migration.batch_size = batch_size;
+        }
+    }
 
     Ok(config)
 }
