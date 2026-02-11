@@ -164,16 +164,14 @@ async fn main() -> Result<()> {
         info!("\n[{}/{}] Processing group {}...", idx + 1, groups.len(), group.chat_id);
         
         // Query messages for this specific group with message_id less than the earliest in ES
+        // Note: message_id is inside msg_ctx in MongoDB BotLog structure
         let filter = doc! {
             "$and": [
                 {
-                    "$or": [
-                        { "chat_id": group.chat_id },
-                        { "group_id": group.chat_id },
-                    ]
+                    "group_id": group.chat_id
                 },
                 {
-                    "message_id": { "$lt": group.earliest_message_id }
+                    "msg_ctx.message_id": { "$lt": group.earliest_message_id }
                 }
             ]
         };
@@ -189,7 +187,7 @@ async fn main() -> Result<()> {
 
         // Sort by message_id ascending to migrate oldest first
         let find_options = mongodb::options::FindOptions::builder()
-            .sort(doc! { "message_id": 1 })
+            .sort(doc! { "msg_ctx.message_id": 1 })
             .build();
 
         let mut cursor = collection.find(filter).with_options(find_options).await?;
@@ -409,16 +407,22 @@ async fn get_groups_with_earliest_messages(
 
 /// Parse MongoDB document to MongoMessage
 fn parse_mongo_document(doc: Document) -> Result<MongoMessage> {
-    let message_id = doc.get_i64("message_id")
+    // message_id is inside msg_ctx in BotLog structure
+    let message_id = doc.get_document("msg_ctx")
+        .and_then(|ctx| ctx.get_i64("message_id")
+            .or_else(|_| ctx.get_i32("message_id").map(|v| v as i64)))
+        .or_else(|_| doc.get_i64("message_id"))
         .or_else(|_| doc.get_i32("message_id").map(|v| v as i64))
-        .context("Missing message_id")?;
+        .context("Missing message_id or msg_ctx.message_id")?;
 
-    let chat_id = doc.get_i64("chat_id")
-        .or_else(|_| doc.get_i64("group_id"))
-        .or_else(|_| doc.get_i32("chat_id").map(|v| v as i64))
+    // BotLog uses group_id, not chat_id
+    let chat_id = doc.get_i64("group_id")
+        .or_else(|_| doc.get_i64("chat_id"))
         .or_else(|_| doc.get_i32("group_id").map(|v| v as i64))
-        .context("Missing chat_id/group_id")?;
+        .or_else(|_| doc.get_i32("chat_id").map(|v| v as i64))
+        .context("Missing group_id/chat_id")?;
 
+    // user_id in BotLog is u64 but we store as i64
     let user_id = doc.get_i64("user_id")
         .or_else(|_| doc.get_i32("user_id").map(|v| v as i64))
         .ok();
